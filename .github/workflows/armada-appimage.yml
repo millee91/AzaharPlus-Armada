@@ -4,17 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: "Source tag in this fork"
+        description: "Tag in this fork to build or repackage"
         required: true
         type: string
         default: "AZAHAR_PLUS_2126_2_A"
+      repackage_only:
+        description: "Repackage an earlier compiled AppDir (skip Citra/FFmpeg build)"
+        required: true
+        type: boolean
+        default: false
+      source_run_id:
+        description: "Build run ID containing compiled AppDir (only for repackage_only)"
+        required: false
+        type: string
+        default: ""
       publish_prerelease:
-        description: "Publish release assets automatically"
+        description: "Publish assets to GitHub Releases automatically"
         required: true
         type: boolean
         default: false
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -23,25 +34,64 @@ concurrency:
 
 jobs:
   build-appimage:
-    name: Fedora 44 AArch64 — FFmpeg 7 only
+    name: Fedora 44 AArch64 (cached build or repackage)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     steps:
-      - name: Prepare output and diagnostics
+      - name: Validate inputs and prepare paths
         shell: bash
-        run: mkdir -p out diagnostics
+        env:
+          REPACKAGE_ONLY: ${{ inputs.repackage_only }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p out diagnostics staging .cache/ffmpeg7 .cache/ccache
+          if [[ "$REPACKAGE_ONLY" == "true" && ! "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "For repackage_only, provide the successful/failed compilation run ID."
+            exit 1
+          fi
 
-      - name: Compile and package inside Fedora 44
+      - name: Restore FFmpeg 7.1.5 cache
+        id: ffmpeg-cache
+        if: ${{ !inputs.repackage_only }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/ffmpeg7
+          key: armada-ffmpeg-7.1.5-fedora44-aarch64-v2
+
+      - name: Restore C++ compiler cache
+        id: ccache-cache
+        if: ${{ !inputs.repackage_only }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/ccache
+          key: armada-ccache-f44-aarch64-${{ inputs.upstream_tag }}-${{ github.sha }}
+          restore-keys: |
+            armada-ccache-f44-aarch64-${{ inputs.upstream_tag }}-
+            armada-ccache-f44-aarch64-
+
+      - name: Download previously compiled AppDir
+        if: ${{ inputs.repackage_only }}
+        uses: actions/download-artifact@v4
+        with:
+          name: Armada-compiled-${{ inputs.upstream_tag }}
+          path: staging
+          run-id: ${{ inputs.source_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Compile if necessary, then package AppImage in Fedora 44
         shell: bash
         env:
           UPSTREAM_TAG: ${{ inputs.upstream_tag }}
           SOURCE_REPOSITORY: ${{ github.repository }}
           WORKFLOW_SHA: ${{ github.sha }}
+          REPACKAGE_ONLY: ${{ inputs.repackage_only }}
         run: |
           set -euo pipefail
-          docker run --rm -i \
-            --platform linux/arm64 \
-            -e UPSTREAM_TAG -e SOURCE_REPOSITORY -e WORKFLOW_SHA \
+          docker run --rm -i --platform linux/arm64 \
+            -e UPSTREAM_TAG -e SOURCE_REPOSITORY \
+            -e WORKFLOW_SHA -e REPACKAGE_ONLY \
             -v "$GITHUB_WORKSPACE:/work" -w /work \
             fedora:44 bash -se <<'BUILD_SCRIPT'
           set -euo pipefail
@@ -50,10 +100,13 @@ jobs:
           [[ "$UPSTREAM_TAG" =~ ^AZAHAR_PLUS_[A-Za-z0-9_]+$ ]] || {
             echo "Invalid source tag: $UPSTREAM_TAG"; exit 1;
           }
+          VERSION="${UPSTREAM_TAG#AZAHAR_PLUS_}"
+          VERSION="${VERSION//_/.}"
+          FFMPEG_PREFIX=/work/.cache/ffmpeg7/7.1.5
 
           echo '=== Build dependencies ==='
           dnf install -y \
-            git cmake gcc gcc-c++ ninja-build make binutils file \
+            git cmake gcc gcc-c++ ccache ninja-build make binutils file \
             curl tar xz patch diffutils python3 perl patchelf \
             desktop-file-utils pkgconf-pkg-config \
             zlib-devel openssl-devel jack-audio-connection-kit-devel \
@@ -65,38 +118,54 @@ jobs:
             gstreamer1-plugins-good \
             2>&1 | tee /work/diagnostics/dependencies.log
 
-          echo '=== FFmpeg 7.1.5 source and build ==='
-          cd /work
-          curl --fail --location --retry 3 \
-            https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz \
-            --output ffmpeg-7.1.5.tar.xz
-          sha256sum ffmpeg-7.1.5.tar.xz \
-            | tee /work/diagnostics/ffmpeg-source-sha256.txt
-          echo 'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f  ffmpeg-7.1.5.tar.xz' \
-            | sha256sum --check --status
-          tar -xf ffmpeg-7.1.5.tar.xz
-          cd /work/ffmpeg-7.1.5
-          ./configure \
-            --prefix=/opt/ffmpeg7 --libdir=/opt/ffmpeg7/lib \
-            --arch=aarch64 --enable-shared --disable-static \
-            --disable-programs --disable-doc --disable-debug \
-            --disable-autodetect --enable-avcodec --enable-avformat \
-            --enable-avfilter --enable-avutil --enable-swresample \
-            --enable-swscale --enable-pic --enable-pthreads \
-            2>&1 | tee /work/diagnostics/ffmpeg-configure.log
-          make -j4 2>&1 | tee /work/diagnostics/ffmpeg-build.log
-          make install 2>&1 | tee /work/diagnostics/ffmpeg-install.log
+          if [[ "$REPACKAGE_ONLY" != "true" ]]; then
+            echo '=== FFmpeg 7.1.5 source (pinned SHA-256) ==='
+            cd /work
+            curl --fail --location --retry 3 \
+              https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz \
+              --output ffmpeg-7.1.5.tar.xz
+            sha256sum ffmpeg-7.1.5.tar.xz \
+              | tee /work/diagnostics/ffmpeg-source-sha256.txt
+            echo 'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f  ffmpeg-7.1.5.tar.xz' \
+              | sha256sum --check --status
+            if [[ -f "$FFMPEG_PREFIX/lib/libavutil.so.59" && \
+                  -f "$FFMPEG_PREFIX/lib/pkgconfig/libavutil.pc" ]]; then
+              echo 'Using cached FFmpeg 7.1.5 binaries'
+            else
+              echo '=== Compile FFmpeg 7.1.5 (one time per cache version) ==='
+              rm -rf "$FFMPEG_PREFIX"
+              tar -xf /work/ffmpeg-7.1.5.tar.xz -C /work
+              cd /work/ffmpeg-7.1.5
+              ./configure \
+                --prefix="$FFMPEG_PREFIX" --libdir="$FFMPEG_PREFIX/lib" \
+                --arch=aarch64 --enable-shared --disable-static \
+                --disable-programs --disable-doc --disable-debug \
+                --disable-autodetect --enable-avcodec --enable-avformat \
+                --enable-avfilter --enable-avutil --enable-swresample \
+                --enable-swscale --enable-pic --enable-pthreads \
+                2>&1 | tee /work/diagnostics/ffmpeg-configure.log
+              make -j4 2>&1 | tee /work/diagnostics/ffmpeg-build.log
+              make install 2>&1 | tee /work/diagnostics/ffmpeg-install.log
+            fi
+            test -f "$FFMPEG_PREFIX/lib/libavutil.so.59"
+            test -f "$FFMPEG_PREFIX/lib/libavcodec.so.61"
+            echo valid > /work/.cache/ffmpeg-cache-valid
+            echo "$FFMPEG_PREFIX/lib" > /etc/ld.so.conf.d/ffmpeg7.conf
+            ldconfig
+            export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig"
+            export PKG_CONFIG_LIBDIR="$FFMPEG_PREFIX/lib/pkgconfig"
+            export LD_LIBRARY_PATH="$FFMPEG_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+            export CMAKE_PREFIX_PATH="$FFMPEG_PREFIX"
+            test "$(pkg-config --modversion libavutil | cut -d. -f1)" = 59
+            pkg-config --modversion libavutil \
+              | tee /work/diagnostics/ffmpeg-version.log
 
-          echo /opt/ffmpeg7/lib > /etc/ld.so.conf.d/ffmpeg7.conf
-          ldconfig
-          export PKG_CONFIG_PATH=/opt/ffmpeg7/lib/pkgconfig
-          export PKG_CONFIG_LIBDIR=/opt/ffmpeg7/lib/pkgconfig
-          export LD_LIBRARY_PATH="/opt/ffmpeg7/lib:${LD_LIBRARY_PATH:-}"
-          export CMAKE_PREFIX_PATH=/opt/ffmpeg7
-          for lib in libavcodec libavformat libavfilter libavutil libswresample; do
-            pkg-config --modversion "$lib"
-          done | tee /work/diagnostics/ffmpeg-version.log
-          test "$(pkg-config --modversion libavutil | cut -d. -f1)" = 59
+            echo '=== Configure ccache (persist between builds) ==='
+            export CCACHE_DIR=/work/.cache/ccache
+            export CCACHE_BASEDIR=/work/src
+            export CCACHE_COMPILERCHECK=content
+            ccache --set-config=max_size=1500M
+            ccache --zero-stats
 
           echo '=== Exact tagged source (including submodules) ==='
           git clone --depth 1 --branch "$UPSTREAM_TAG" \
@@ -114,18 +183,20 @@ jobs:
           echo '=== Configure AzaharPlus ==='
           cmake -S /work/src -B /work/src/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/opt/ffmpeg7 \
-            -DCMAKE_BUILD_RPATH=/opt/ffmpeg7/lib \
-            -DAVCODEC_INCLUDE_DIRS=/opt/ffmpeg7/include \
-            -DAVFORMAT_INCLUDE_DIRS=/opt/ffmpeg7/include \
-            -DAVFILTER_INCLUDE_DIRS=/opt/ffmpeg7/include \
-            -DAVUTIL_INCLUDE_DIRS=/opt/ffmpeg7/include \
-            -DSWRESAMPLE_INCLUDE_DIRS=/opt/ffmpeg7/include \
-            -DAVCODEC_LIBRARIES=/opt/ffmpeg7/lib/libavcodec.so \
-            -DAVFORMAT_LIBRARIES=/opt/ffmpeg7/lib/libavformat.so \
-            -DAVFILTER_LIBRARIES=/opt/ffmpeg7/lib/libavfilter.so \
-            -DAVUTIL_LIBRARIES=/opt/ffmpeg7/lib/libavutil.so \
-            -DSWRESAMPLE_LIBRARIES=/opt/ffmpeg7/lib/libswresample.so \
+            -DCMAKE_PREFIX_PATH="$FFMPEG_PREFIX" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_BUILD_RPATH="$FFMPEG_PREFIX/lib" \
+            -DAVCODEC_INCLUDE_DIRS="$FFMPEG_PREFIX/include" \
+            -DAVFORMAT_INCLUDE_DIRS="$FFMPEG_PREFIX/include" \
+            -DAVFILTER_INCLUDE_DIRS="$FFMPEG_PREFIX/include" \
+            -DAVUTIL_INCLUDE_DIRS="$FFMPEG_PREFIX/include" \
+            -DSWRESAMPLE_INCLUDE_DIRS="$FFMPEG_PREFIX/include" \
+            -DAVCODEC_LIBRARIES="$FFMPEG_PREFIX/lib/libavcodec.so" \
+            -DAVFORMAT_LIBRARIES="$FFMPEG_PREFIX/lib/libavformat.so" \
+            -DAVFILTER_LIBRARIES="$FFMPEG_PREFIX/lib/libavfilter.so" \
+            -DAVUTIL_LIBRARIES="$FFMPEG_PREFIX/lib/libavutil.so" \
+            -DSWRESAMPLE_LIBRARIES="$FFMPEG_PREFIX/lib/libswresample.so" \
             -DENABLE_QT=ON -DENABLE_FFMPEG=ON \
             -DENABLE_VULKAN=ON -DENABLE_SOFTWARE_RENDERER=ON \
             -DENABLE_LTO=OFF -DENABLE_TESTS=OFF \
@@ -145,10 +216,51 @@ jobs:
           echo '=== Compile and build initial AppDir ==='
           cmake --build /work/src/build --target bundle --parallel 4 \
             2>&1 | tee /work/diagnostics/bundle.log
-          APPDIR=/work/src/build/AppDir-azahar
-          test -d "$APPDIR/usr/lib"
-          test -e "$APPDIR/AppRun"
+
+          echo '=== Archive compiled inputs for future package-only runs ==='
+          mkdir -p /work/staging
+          APPDIR_ORIGINAL=/work/src/build/AppDir-azahar
+          test -d "$APPDIR_ORIGINAL/usr/lib"
+          test -e "$APPDIR_ORIGINAL/AppRun"
+          test -x "$APPDIR_ORIGINAL/usr/bin/azahar"
+          tar -czf /work/staging/AppDir-azahar.tar.gz \
+            -C /work/src/build AppDir-azahar
+          TOOL_ROOT=/work/src/build/externals/linuxdeploy
+          test -x "$TOOL_ROOT/squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool"
+          tar -czf /work/staging/linuxdeploy-tool.tar.gz \
+            -C "$TOOL_ROOT" squashfs-root
+          tar --exclude=.git --exclude='src/build' -czf \
+            "/work/staging/AzaharPlus-${VERSION}-source-with-submodules.tar.gz" \
+            -C /work src
+          cp /work/ffmpeg-7.1.5.tar.xz /work/staging/
+          git -C /work/src rev-parse HEAD > /work/staging/source-commit.txt
+          printf '%s\n' "$UPSTREAM_TAG" > /work/staging/source-tag.txt
+          echo '=== Compiler cache results ==='
+          ccache --show-stats | tee /work/diagnostics/ccache-stats.log
+          echo ready > /work/.cache/ccache-cache-valid
+          else
+            echo '=== Repackage ONLY: skip Citra, AzaharPlus and FFmpeg compilation ==='
+            test -s /work/staging/AppDir-azahar.tar.gz
+            test -s /work/staging/linuxdeploy-tool.tar.gz
+            test -s /work/staging/ffmpeg-7.1.5.tar.xz
+            test -s "/work/staging/AzaharPlus-${VERSION}-source-with-submodules.tar.gz"
+            test "$(cat /work/staging/source-tag.txt)" = "$UPSTREAM_TAG"
+            tar -xzf "/work/staging/AzaharPlus-${VERSION}-source-with-submodules.tar.gz" -C /work
+          fi
+
+          echo '=== Restore the ORIGINAL compiled AppDir (reproducible cleanup) ==='
+          mkdir -p /work/package-root /work/tool
+          tar -xzf /work/staging/AppDir-azahar.tar.gz -C /work/package-root
+          tar -xzf /work/staging/linuxdeploy-tool.tar.gz -C /work/tool
+          APPDIR=/work/package-root/AppDir-azahar
+          SOURCE_COMMIT="$(cat /work/staging/source-commit.txt)"
           test -x "$APPDIR/usr/bin/azahar"
+          test -e "$APPDIR/AppRun"
+          test -s "$APPDIR/usr/lib/libavcodec.so.61"
+          test -s "$APPDIR/usr/lib/libavutil.so.59"
+          if [[ ! -f /work/ffmpeg-7.1.5/COPYING.LGPLv2.1 ]]; then
+            tar -xf /work/staging/ffmpeg-7.1.5.tar.xz -C /work
+          fi
 
           echo '=== Remove Qt FFmpeg 8 backend and unused dependents ==='
           # The Qt FFmpeg plugin pulls in Fedora FFmpeg 8. Azahar itself
@@ -357,7 +469,7 @@ jobs:
           Unofficial AzaharPlus ARM64 AppImage for Armada OS
           Source repository: https://github.com/${SOURCE_REPOSITORY}
           Source tag: ${UPSTREAM_TAG}
-          Source commit: $(git -C /work/src rev-parse HEAD)
+          Source commit: ${SOURCE_COMMIT}
           Original Azahar logo: PabloMK7 and angyartanddraw, CC BY 4.0
           Image conversion: original SVG rasterized as a 256x256 PNG
           Logo license: https://creativecommons.org/licenses/by/4.0/
@@ -368,7 +480,7 @@ jobs:
           EOF
 
           echo '=== Republish cleaned AppDir, not original AppImage ==='
-          TOOL=/work/src/build/externals/linuxdeploy/squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool
+          TOOL=/work/tool/squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool
           test -x "$TOOL"
           VERSION="${UPSTREAM_TAG#AZAHAR_PLUS_}"
           VERSION="${VERSION//_/.}"
@@ -412,13 +524,10 @@ jobs:
             | sort -nr | head -n 35 \
             > /work/diagnostics/largest-bundled-libraries.log
 
-          echo '=== Publish exact corresponding source automatically ==='
-          cd /work
-          tar --exclude=.git --exclude='src/build' -czf \
-            "/work/out/AzaharPlus-${VERSION}-source-with-submodules.tar.gz" \
-            src
-          cp /work/ffmpeg-7.1.5.tar.xz /work/out/
-          # Keep the precise build instructions alongside the corresponding sources.
+          echo '=== Include previously archived corresponding sources ==='
+          cp "/work/staging/AzaharPlus-${VERSION}-source-with-submodules.tar.gz" /work/out/
+          cp /work/staging/ffmpeg-7.1.5.tar.xz /work/out/
+          # Keep the exact currently-executing workflow with the source archive.
           curl --fail --location --retry 3 \
             "https://raw.githubusercontent.com/${SOURCE_REPOSITORY}/${WORKFLOW_SHA}/.github/workflows/armada-appimage.yml" \
             -o /work/out/armada-appimage.yml
@@ -426,6 +535,38 @@ jobs:
           sha256sum *.AppImage *.tar.gz *.tar.xz armada-appimage.yml > SHA256SUMS.txt
           cat SHA256SUMS.txt
           BUILD_SCRIPT
+
+      - name: Check whether caches are ready to be saved
+        id: cache-ready
+        if: ${{ always() && !inputs.repackage_only }}
+        shell: bash
+        run: |
+          if [[ -f .cache/ffmpeg-cache-valid ]]; then echo 'ffmpeg=true' >> "$GITHUB_OUTPUT"; fi
+          if [[ -f .cache/ccache-cache-valid ]]; then echo 'ccache=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Save newly compiled FFmpeg cache
+        if: ${{ always() && steps.cache-ready.outputs.ffmpeg == 'true' && steps.ffmpeg-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/ffmpeg7
+          key: armada-ffmpeg-7.1.5-fedora44-aarch64-v2
+
+      - name: Save compiler cache
+        if: ${{ always() && steps.cache-ready.outputs.ccache == 'true' && steps.ccache-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/ccache
+          key: armada-ccache-f44-aarch64-${{ inputs.upstream_tag }}-${{ github.sha }}
+
+      - name: Preserve compiled AppDir for repackaging
+        if: ${{ always() && !inputs.repackage_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Armada-compiled-${{ inputs.upstream_tag }}
+          path: staging/
+          if-no-files-found: ignore
+          retention-days: 30
+          compression-level: 0
 
       - name: Upload diagnostics even on failure
         if: always()
@@ -460,7 +601,7 @@ jobs:
             gh release upload "$tag" "${files[@]}" --clobber
           else
             gh release create "$tag" "${files[@]}" \
-              --target "$(cat diagnostics/source-commit.log)" --prerelease \
-              --title "AzaharPlus ${UPSTREAM_TAG} – Armada ARM64" \
-              --notes "Experimental community AppImage for Armada OS ARM64. Built from tagged fork sources with FFmpeg 7.1.5. Requires on-device testing. Source archives, licenses and checksums included. Not affiliated with upstream developers."
+              --target "$(cat staging/source-commit.txt)" --prerelease \
+              --title "AzaharPlus ${UPSTREAM_TAG} - Armada ARM64" \
+              --notes "Experimental ARM64 AppImage for Armada OS. Includes corresponding source, build instructions and checksums. No FFmpeg 8. Test on Armada before relying on it."
           fi
