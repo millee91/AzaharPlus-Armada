@@ -1,21 +1,15 @@
-
 name: Build AzaharPlus Armada ARM64 AppImage
 
 on:
   workflow_dispatch:
     inputs:
-      source_repository:
-        description: "AzaharPlus source repository"
-        required: true
-        type: string
-        default: "millee91/AzaharPlus-Armada"
       upstream_tag:
-        description: "Stable source tag"
+        description: "Source tag in this fork"
         required: true
         type: string
         default: "AZAHAR_PLUS_2126_2_A"
       publish_prerelease:
-        description: "Publish as GitHub prerelease"
+        description: "Publish release assets automatically"
         required: true
         type: boolean
         default: false
@@ -23,189 +17,102 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: armada-appimage-${{ inputs.upstream_tag }}
+  cancel-in-progress: false
+
 jobs:
   build-appimage:
-    name: Fedora 44 ARM64 AppImage
+    name: Fedora 44 AArch64 — FFmpeg 7 only
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
-
     steps:
-      - name: Prepare directories
+      - name: Prepare output and diagnostics
         shell: bash
-        run: |
-          mkdir -p out diagnostics
+        run: mkdir -p out diagnostics
 
-      - name: Build AzaharPlus on Fedora 44
+      - name: Compile and package inside Fedora 44
         shell: bash
         env:
           UPSTREAM_TAG: ${{ inputs.upstream_tag }}
-          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-
           docker run --rm -i \
             --platform linux/arm64 \
-            -e UPSTREAM_TAG \
-            -e SOURCE_REPOSITORY \
-            -v "$GITHUB_WORKSPACE:/work" \
-            -w /work \
-            fedora:44 \
-            bash -se <<'BUILD_SCRIPT'
-
+            -e UPSTREAM_TAG -e SOURCE_REPOSITORY -e WORKFLOW_SHA \
+            -v "$GITHUB_WORKSPACE:/work" -w /work \
+            fedora:44 bash -se <<'BUILD_SCRIPT'
           set -euo pipefail
-
-          echo "=== Fedora ==="
+          test "$(uname -m)" = aarch64
           cat /etc/fedora-release
+          [[ "$UPSTREAM_TAG" =~ ^AZAHAR_PLUS_[A-Za-z0-9_]+$ ]] || {
+            echo "Invalid source tag: $UPSTREAM_TAG"; exit 1;
+          }
 
-          echo "=== Architecture ==="
-          uname -m
-          test "$(uname -m)" = "aarch64"
-
-          echo "=== Install dependencies ==="
-
+          echo '=== Build dependencies ==='
           dnf install -y \
-            git \
-            cmake \
-            gcc \
-            gcc-c++ \
-            clang \
-            ninja-build \
-            make \
-            file \
-            findutils \
-            binutils \
-            curl \
-            wget \
-            tar \
-            xz \
-            patch \
-            diffutils \
-            python3 \
-            perl \
-            patchelf \
-            desktop-file-utils \
-            pkgconf-pkg-config \
-            zlib-devel \
-            openssl-devel \
-            jack-audio-connection-kit-devel \
-            libX11-devel \
-            libXext-devel \
-            pipewire-devel \
-            portaudio-devel \
-            qt6-qtbase-devel \
-            qt6-qtbase-private-devel \
-            qt6-qtmultimedia-devel \
-            qt6-qtwayland \
-            qt6-qtsvg \
-            SDL2-devel \
-            xorg-x11-server-devel \
+            git cmake gcc gcc-c++ ninja-build make binutils file \
+            curl tar xz patch diffutils python3 perl patchelf \
+            desktop-file-utils pkgconf-pkg-config \
+            zlib-devel openssl-devel jack-audio-connection-kit-devel \
+            libX11-devel libXext-devel pipewire-devel portaudio-devel \
+            qt6-qtbase-devel qt6-qtbase-private-devel \
+            qt6-qtmultimedia-devel qt6-qtwayland qt6-qtsvg \
+            SDL2-devel xorg-x11-server-devel \
+            librsvg2-tools appstream gstreamer1-plugins-base \
+            gstreamer1-plugins-good \
             2>&1 | tee /work/diagnostics/dependencies.log
 
-          echo "=== Download FFmpeg 7.1.5 ==="
-
+          echo '=== FFmpeg 7.1.5 source and build ==='
           cd /work
-
-          curl -fL \
-            --retry 3 \
+          curl --fail --location --retry 3 \
             https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz \
-            -o ffmpeg-7.1.5.tar.xz
-
+            --output ffmpeg-7.1.5.tar.xz
+          sha256sum ffmpeg-7.1.5.tar.xz \
+            | tee /work/diagnostics/ffmpeg-source-sha256.txt
           tar -xf ffmpeg-7.1.5.tar.xz
           cd /work/ffmpeg-7.1.5
+          ./configure \
+            --prefix=/opt/ffmpeg7 --libdir=/opt/ffmpeg7/lib \
+            --arch=aarch64 --enable-shared --disable-static \
+            --disable-programs --disable-doc --disable-debug \
+            --disable-autodetect --enable-avcodec --enable-avformat \
+            --enable-avfilter --enable-avutil --enable-swresample \
+            --enable-swscale --enable-pic --enable-pthreads \
+            2>&1 | tee /work/diagnostics/ffmpeg-configure.log
+          make -j4 2>&1 | tee /work/diagnostics/ffmpeg-build.log
+          make install 2>&1 | tee /work/diagnostics/ffmpeg-install.log
 
-          echo "=== Configure FFmpeg ==="
-
-          if ! ./configure \
-            --prefix=/opt/ffmpeg7 \
-            --libdir=/opt/ffmpeg7/lib \
-            --arch=aarch64 \
-            --enable-shared \
-            --disable-static \
-            --disable-programs \
-            --disable-doc \
-            --disable-debug \
-            --disable-autodetect \
-            --enable-avcodec \
-            --enable-avformat \
-            --enable-avfilter \
-            --enable-avutil \
-            --enable-swresample \
-            --enable-swscale \
-            --enable-pic \
-            --enable-pthreads \
-            2>&1 | tee /work/diagnostics/ffmpeg-configure.log; then
-            exit 1
-          fi
-
-          echo "=== Compile FFmpeg ==="
-
-          if ! make -j4 \
-            2>&1 | tee /work/diagnostics/ffmpeg-build.log; then
-            exit 1
-          fi
-
-          echo "=== Install FFmpeg ==="
-
-          if ! make install \
-            2>&1 | tee /work/diagnostics/ffmpeg-install.log; then
-            exit 1
-          fi
-
-          echo "=== Register FFmpeg 7 ==="
-
-          echo /opt/ffmpeg7/lib \
-            > /etc/ld.so.conf.d/ffmpeg7.conf
-
+          echo /opt/ffmpeg7/lib > /etc/ld.so.conf.d/ffmpeg7.conf
           ldconfig
-
-          export PKG_CONFIG_PATH="/opt/ffmpeg7/lib/pkgconfig"
-          export PKG_CONFIG_LIBDIR="/opt/ffmpeg7/lib/pkgconfig"
+          export PKG_CONFIG_PATH=/opt/ffmpeg7/lib/pkgconfig
+          export PKG_CONFIG_LIBDIR=/opt/ffmpeg7/lib/pkgconfig
           export LD_LIBRARY_PATH="/opt/ffmpeg7/lib:${LD_LIBRARY_PATH:-}"
-          export CMAKE_PREFIX_PATH="/opt/ffmpeg7"
+          export CMAKE_PREFIX_PATH=/opt/ffmpeg7
+          for lib in libavcodec libavformat libavfilter libavutil libswresample; do
+            pkg-config --modversion "$lib"
+          done | tee /work/diagnostics/ffmpeg-version.log
+          test "$(pkg-config --modversion libavutil | cut -d. -f1)" = 59
 
-          echo "=== Verify FFmpeg versions ==="
-
-          pkg-config --modversion libavutil \
-            | tee /work/diagnostics/ffmpeg-version.log
-
-          pkg-config --modversion libavcodec \
-            | tee -a /work/diagnostics/ffmpeg-version.log
-
-          pkg-config --modversion libavformat \
-            | tee -a /work/diagnostics/ffmpeg-version.log
-
-          pkg-config --modversion libavfilter \
-            | tee -a /work/diagnostics/ffmpeg-version.log
-
-          test "$(pkg-config --modversion libavutil | cut -d. -f1)" = "59"
-
-          echo "=== Clone AzaharPlus from fork ==="
-
-          git clone \
-            --depth 1 \
-            --branch "$UPSTREAM_TAG" \
-            --recurse-submodules \
-            --shallow-submodules \
-            "https://github.com/${SOURCE_REPOSITORY}.git" \
-            /work/src \
+          echo '=== Exact tagged source (including submodules) ==='
+          git clone --depth 1 --branch "$UPSTREAM_TAG" \
+            --recurse-submodules --shallow-submodules \
+            "https://github.com/${SOURCE_REPOSITORY}.git" /work/src \
             2>&1 | tee /work/diagnostics/clone.log
-
-          echo "=== Record source commit ==="
-
           git -C /work/src rev-parse HEAD \
             | tee /work/diagnostics/source-commit.log
+          git -C /work/src submodule status --recursive \
+            > /work/diagnostics/source-submodules.log
+          if grep -Eq '^[+-U]' /work/diagnostics/source-submodules.log; then
+            echo 'Some source submodules are not checked out'; exit 1
+          fi
 
-          echo "=== Configure AzaharPlus ==="
-
-          cmake -E rm -rf /work/src/build
-
-          if ! cmake \
-            -S /work/src \
-            -B /work/src/build \
-            -G Ninja \
+          echo '=== Configure AzaharPlus ==='
+          cmake -S /work/src -B /work/src/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/opt/ffmpeg7 \
-            -DCMAKE_INSTALL_RPATH=/opt/ffmpeg7/lib \
             -DCMAKE_BUILD_RPATH=/opt/ffmpeg7/lib \
             -DAVCODEC_INCLUDE_DIRS=/opt/ffmpeg7/include \
             -DAVFORMAT_INCLUDE_DIRS=/opt/ffmpeg7/include \
@@ -217,157 +124,233 @@ jobs:
             -DAVFILTER_LIBRARIES=/opt/ffmpeg7/lib/libavfilter.so \
             -DAVUTIL_LIBRARIES=/opt/ffmpeg7/lib/libavutil.so \
             -DSWRESAMPLE_LIBRARIES=/opt/ffmpeg7/lib/libswresample.so \
-            -DENABLE_QT=ON \
-            -DUSE_SYSTEM_QT=ON \
-            -DENABLE_FFMPEG=ON \
-            -DENABLE_LTO=OFF \
-            -DENABLE_TESTS=OFF \
+            -DENABLE_QT=ON -DENABLE_FFMPEG=ON \
+            -DENABLE_VULKAN=ON -DENABLE_SOFTWARE_RENDERER=ON \
+            -DENABLE_LTO=OFF -DENABLE_TESTS=OFF \
             -DENABLE_ROOM_STANDALONE=OFF \
             -DCITRA_WARNINGS_AS_ERRORS=OFF \
-            2>&1 | tee /work/diagnostics/cmake.log; then
-            exit 1
-          fi
-
-          echo "=== Configure Qt Wayland plugins ==="
+            2>&1 | tee /work/diagnostics/cmake.log
 
           QT_PLUGIN_DIR="$(qtpaths6 --query QT_INSTALL_PLUGINS)"
-
-          echo "Qt plugin directory: $QT_PLUGIN_DIR"
-
-          ls -la "$QT_PLUGIN_DIR/platforms/" \
-            | tee /work/diagnostics/qt-platforms.log
-
-          WAYLAND_PLUGIN="$QT_PLUGIN_DIR/platforms/libqwayland.so"
-
-          if [ ! -f "$WAYLAND_PLUGIN" ]; then
-            echo "ERROR: Qt Wayland plugin not found:"
-            echo "$WAYLAND_PLUGIN"
-            exit 1
-          fi
-
-          export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
-          export EXTRA_QT_PLUGINS="waylandcompositor"
-          export EXTRA_QT_MODULES="waylandcompositor"
-          export NO_STRIP=1
+          test -f "$QT_PLUGIN_DIR/platforms/libqwayland.so"
+          test -f "$QT_PLUGIN_DIR/multimedia/libgstreamermediaplugin.so"
+          export EXTRA_PLATFORM_PLUGINS=libqwayland.so
+          export EXTRA_QT_MODULES=waylandcompositor
+          export EXTRA_QT_PLUGINS=waylandcompositor
           export APPIMAGE_EXTRACT_AND_RUN=1
+          # Deliberately do NOT set NO_STRIP=1.
 
-          echo "=== Compile and bundle AppImage ==="
+          echo '=== Compile and build initial AppDir ==='
+          cmake --build /work/src/build --target bundle --parallel 4 \
+            2>&1 | tee /work/diagnostics/bundle.log
+          APPDIR=/work/src/build/AppDir-azahar
+          test -d "$APPDIR/usr/lib"
+          test -e "$APPDIR/AppRun"
+          test -x "$APPDIR/usr/bin/azahar"
 
-          if ! cmake \
-            --build /work/src/build \
-            --target bundle \
-            --parallel 4 \
-            2>&1 | tee /work/diagnostics/bundle.log; then
+          echo '=== Remove redundant Qt FFmpeg 8 backend ==='
+          rm -f "$APPDIR/usr/plugins/multimedia/libffmpegmediaplugin.so"
+          for pattern in \
+            'libavcodec.so.62*' 'libavdevice.so.62*' \
+            'libavfilter.so.11*' 'libavformat.so.62*' \
+            'libavutil.so.60*' 'libswresample.so.6*' \
+            'libswscale.so.9*'; do
+            find "$APPDIR/usr/lib" -maxdepth 1 -name "$pattern" \
+              -print -delete
+          done | tee /work/diagnostics/removed-ffmpeg8.log
+          test -f "$APPDIR/usr/plugins/multimedia/libgstreamermediaplugin.so"
+          test -f "$APPDIR/usr/lib/libavcodec.so.61"
+          test -f "$APPDIR/usr/lib/libavutil.so.59"
 
-            echo "=== Build errors ==="
+          echo '=== Check remaining ELF dynamic dependencies ==='
+          python3 - "$APPDIR" <<'PYCODE' \
+            | tee /work/diagnostics/dependency-audit.log
+          import pathlib, re, subprocess, sys
+          root = pathlib.Path(sys.argv[1])
+          bad = re.compile(r'^lib(?:avcodec\.so\.62|avdevice\.so\.62|avfilter\.so\.11|avformat\.so\.62|avutil\.so\.60|swresample\.so\.6|swscale\.so\.9)(?:\.|$)')
+          scanned = 0
+          for p in root.rglob('*'):
+              if not p.is_file() or p.is_symlink():
+                  continue
+              with p.open('rb') as f:
+                  if f.read(4) != b'\x7fELF':
+                      continue
+              scanned += 1
+              proc = subprocess.run(['readelf', '-d', str(p)], text=True,
+                                    capture_output=True, check=True)
+              for needed in re.findall(r'Shared library: \[([^]]+)\]', proc.stdout):
+                  if bad.match(needed):
+                      print('FORBIDDEN DEPENDENCY:', p, '->', needed)
+                      sys.exit(1)
+          print('ELF files checked:', scanned)
+          print('No remaining FFmpeg 8 dependencies')
+          PYCODE
 
-            grep -inE \
-              "error:|failed|not found|undefined reference|fatal error" \
-              /work/diagnostics/bundle.log \
-              | tail -n 100 || true
+          echo '=== Bundle essential GStreamer plugins for Qt camera ==='
+          GST_DST="$APPDIR/usr/lib/gstreamer-1.0"
+          mkdir -p "$GST_DST"
+          for plugin in \
+            libgstcoreelements.so libgsttypefindfunctions.so \
+            libgstplayback.so libgstvideoconvertscale.so \
+            libgstaudioconvert.so libgstaudioresample.so \
+            libgstautodetect.so libgstapp.so libgstvolume.so \
+            libgstvideo4linux2.so; do
+            if test -f "/usr/lib64/gstreamer-1.0/$plugin"; then
+              cp "/usr/lib64/gstreamer-1.0/$plugin" "$GST_DST/"
+              echo "Bundled: $plugin"
+            fi
+          done | tee /work/diagnostics/gstreamer-plugins.log
+          test -f "$GST_DST/libgstcoreelements.so"
+          test -f "$GST_DST/libgstplayback.so"
+          # These GStreamer plugins may use system codecs/device drivers.
+          # Do not remove general libraries based solely on their filename.
 
-            echo "=== Last 180 lines ==="
-            tail -n 180 /work/diagnostics/bundle.log
-            exit 1
-          fi
+          echo '=== Make original SVG logo into 256x256 PNG ==='
+          ICON_SVG="$APPDIR/usr/share/icons/hicolor/scalable/apps/org.azahar_emu.Azahar.svg"
+          test -f "$ICON_SVG"
+          ICON_PNG="$APPDIR/org.azahar_emu.Azahar.png"
+          rsvg-convert --width 256 --height 256 "$ICON_SVG" > "$ICON_PNG"
+          test -s "$ICON_PNG"
+          file "$ICON_PNG"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+          cp "$ICON_PNG" \
+            "$APPDIR/usr/share/icons/hicolor/256x256/apps/org.azahar_emu.Azahar.png"
+          ln -sfn org.azahar_emu.Azahar.png "$APPDIR/.DirIcon"
+          test -e "$APPDIR/.DirIcon"
 
-          echo "=== Find AppImage ==="
+          echo '=== Force GStreamer as Qt multimedia backend ==='
+          # Preserve linuxdeploy's original AppRun wrapper.
+          mv "$APPDIR/AppRun" "$APPDIR/AppRun.original"
+          cat > "$APPDIR/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+          export QT_MEDIA_BACKEND=gstreamer
+          export GST_PLUGIN_PATH_1_0="$HERE/usr/lib/gstreamer-1.0${GST_PLUGIN_PATH_1_0:+:$GST_PLUGIN_PATH_1_0}"
+          exec "$HERE/AppRun.original" "$@"
+          APPRUN
+          chmod 755 "$APPDIR/AppRun"
 
-          find /work/src/build/bundle \
-            -type f \
-            -name "*.AppImage" \
-            -print \
-            | tee /work/diagnostics/appimage-files.log
+          echo '=== Provide AppStream metadata ==='
+          META_DIR="$APPDIR/usr/share/metainfo"
+          mkdir -p "$META_DIR"
+          cat > "$META_DIR/org.azahar_emu.Azahar.appdata.xml" <<'APPDATA'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>org.azahar_emu.Azahar</id>
+            <metadata_license>CC0-1.0</metadata_license>
+            <project_license>GPL-3.0-only</project_license>
+            <name>AzaharPlus</name>
+            <summary>Experimental ARM64 build of a Nintendo 3DS emulator</summary>
+            <description><p>Unofficial AzaharPlus AppImage built for Armada OS.</p></description>
+            <url type="homepage">https://github.com/millee91/AzaharPlus-Armada</url>
+            <launchable type="desktop-id">azahar.desktop</launchable>
+          </component>
+          APPDATA
+          appstreamcli validate "$META_DIR/org.azahar_emu.Azahar.appdata.xml" \
+            > /work/diagnostics/appstream-validation.log 2>&1 || {
+              cat /work/diagnostics/appstream-validation.log
+              echo 'AppStream metadata validation has warnings; review before release'
+            }
 
-          APPIMAGE="$(find /work/src/build/bundle \
-            -type f \
-            -name '*.AppImage' \
-            -print -quit)"
+          echo '=== License notices and build provenance ==='
+          mkdir -p "$APPDIR/usr/share/doc/azaharplus/third-party"
+          cp /work/src/LICENSE.txt \
+            "$APPDIR/usr/share/doc/azaharplus/LICENSE.txt"
+          cp -a /work/src/misc/licenses \
+            "$APPDIR/usr/share/doc/azaharplus/third-party/upstream-licenses"
+          cp /work/ffmpeg-7.1.5/COPYING.LGPLv2.1 \
+            "$APPDIR/usr/share/doc/azaharplus/third-party/FFmpeg-LGPL-2.1.txt"
+          for pkg in qt6-qtbase qt6-qtmultimedia qt6-qtwayland \
+                     gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good; do
+            rpm -q "$pkg" >> /work/diagnostics/bundled-package-versions.log
+            while IFS= read -r notice; do
+              test -f "$notice" || continue
+              cp --parents "$notice" \
+                "$APPDIR/usr/share/doc/azaharplus/third-party/"
+            done < <(rpm -ql "$pkg" | grep '^/usr/share/licenses/' || true)
+          done
+          cat > "$APPDIR/usr/share/doc/azaharplus/BUILD-INFO.txt" <<EOF
+          Unofficial AzaharPlus ARM64 AppImage for Armada OS
+          Source repository: https://github.com/${SOURCE_REPOSITORY}
+          Source tag: ${UPSTREAM_TAG}
+          Source commit: $(git -C /work/src rev-parse HEAD)
+          Original Azahar logo: PabloMK7 and angyartanddraw, CC BY 4.0
+          Image conversion: original SVG rasterized as a 256x256 PNG
+          Logo license: https://creativecommons.org/licenses/by/4.0/
+          FFmpeg: 7.1.5 (system FFmpeg 8 removed from AppImage)
+          Qt multimedia backend: GStreamer
+          Build: Fedora 44 AArch64
+          Build workflow: .github/workflows/armada-appimage.yml
+          EOF
 
-          if [ -z "$APPIMAGE" ]; then
-            echo "ERROR: No AppImage was generated"
-            exit 1
-          fi
-
-          test -s "$APPIMAGE"
-
-          echo "=== Name output ==="
-
+          echo '=== Republish cleaned AppDir, not original AppImage ==='
+          TOOL=/work/src/build/externals/linuxdeploy/squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool
+          test -x "$TOOL"
           VERSION="${UPSTREAM_TAG#AZAHAR_PLUS_}"
           VERSION="${VERSION//_/.}"
-
           OUTPUT="/work/out/AzaharPlus-${VERSION}-Armada-aarch64.AppImage"
-
-          cp "$APPIMAGE" "$OUTPUT"
+          ARCH=aarch64 "$TOOL" "$APPDIR" "$OUTPUT" \
+            2>&1 | tee /work/diagnostics/repackage.log
+          test -s "$OUTPUT"
           chmod +x "$OUTPUT"
+          file "$OUTPUT"
+          readelf -h "$OUTPUT" | grep -E 'Machine:.*AArch64'
+          sha256sum "$OUTPUT" | tee /work/diagnostics/appimage-sha256.txt
 
-          file "$OUTPUT" \
-            | tee /work/diagnostics/appimage-file.log
-
-          echo "=== Extract AppImage ==="
-
-          mkdir -p /work/verify
-          cd /work/verify
-
+          echo '=== Test extraction of final AppImage ==='
+          cd /work
+          mkdir -p verify
+          cd verify
           "$OUTPUT" --appimage-extract \
             2>&1 | tee /work/diagnostics/extract.log
+          test -x squashfs-root/AppRun
+          test -e squashfs-root/.DirIcon
+          test -f squashfs-root/usr/lib/libavcodec.so.61
+          test -f squashfs-root/usr/plugins/platforms/libqwayland.so
+          test -f squashfs-root/usr/plugins/multimedia/libgstreamermediaplugin.so
+          if find squashfs-root -name 'libavcodec.so.62*' \
+            -o -name 'libavutil.so.60*' | grep .; then
+            echo 'Unexpected FFmpeg 8 in AppImage'; exit 1
+          fi
+          echo "Final size: $(du -h "$OUTPUT" | cut -f1)"
+          find squashfs-root/usr/lib -maxdepth 1 -type f -printf '%s %f\n' \
+            | sort -nr | head -n 35 \
+            > /work/diagnostics/largest-bundled-libraries.log
 
-          test -e squashfs-root/AppRun
-
-          echo "=== Verify Qt libraries ==="
-
-          find squashfs-root \
-            -name "libQt6Core.so*" \
-            -print \
-            | tee /work/diagnostics/qt-libraries.log
-
-          echo "=== Verify FFmpeg libraries ==="
-
-          find squashfs-root \
-            -name "libavcodec.so*" \
-            -print \
-            | tee /work/diagnostics/ffmpeg-libraries.log
-
-          find squashfs-root \
-            -name "libavutil.so*" \
-            -print \
-            | tee -a /work/diagnostics/ffmpeg-libraries.log
-
-          echo "=== Verify Wayland plugin ==="
-
-          find squashfs-root \
-            -name "libqwayland*.so" \
-            -print \
-            | tee /work/diagnostics/wayland-libraries.log
-
-          test -s /work/diagnostics/qt-libraries.log
-          test -s /work/diagnostics/ffmpeg-libraries.log
-          test -s /work/diagnostics/wayland-libraries.log
-
-          echo "=== Build completed successfully ==="
-          ls -lh "$OUTPUT"
-
+          echo '=== Publish exact corresponding source automatically ==='
+          cd /work
+          tar --exclude=.git --exclude='src/build' -czf \
+            "/work/out/AzaharPlus-${VERSION}-source-with-submodules.tar.gz" \
+            src
+          cp /work/ffmpeg-7.1.5.tar.xz /work/out/
+          # Keep the precise build instructions alongside the corresponding sources.
+          curl --fail --location --retry 3 \
+            "https://raw.githubusercontent.com/${SOURCE_REPOSITORY}/${WORKFLOW_SHA}/.github/workflows/armada-appimage.yml" \
+            -o /work/out/armada-appimage.yml
+          cd /work/out
+          sha256sum *.AppImage *.tar.gz *.tar.xz armada-appimage.yml > SHA256SUMS.txt
+          cat SHA256SUMS.txt
           BUILD_SCRIPT
 
-      - name: Upload diagnostics
+      - name: Upload diagnostics even on failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: appimage-build-diagnostics
           path: diagnostics/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
 
-      - name: Upload ARM64 AppImage
+      - name: Upload AppImage and corresponding sources
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: AzaharPlus-Armada-aarch64-AppImage
-          path: out/*.AppImage
+          name: AzaharPlus-Armada-release-files
+          path: out/
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish GitHub prerelease
+      - name: Publish prerelease directly from build output
         if: ${{ success() && inputs.publish_prerelease }}
         shell: bash
         env:
@@ -375,19 +358,14 @@ jobs:
           UPSTREAM_TAG: ${{ inputs.upstream_tag }}
         run: |
           set -euo pipefail
-
           tag="armada-${UPSTREAM_TAG}"
-
+          files=(out/*.AppImage out/*.tar.gz out/*.tar.xz out/armada-appimage.yml out/SHA256SUMS.txt)
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload \
-              "$tag" \
-              out/*.AppImage \
-              --clobber
+            test "$(gh release view "$tag" --json isPrerelease --jq .isPrerelease)" = true
+            gh release upload "$tag" "${files[@]}" --clobber
           else
-            gh release create \
-              "$tag" \
-              out/*.AppImage \
-              --prerelease \
-              --title "AzaharPlus ${UPSTREAM_TAG} - Armada ARM64" \
-              --notes "Unofficial ARM64 AppImage for Armada OS."
+            gh release create "$tag" "${files[@]}" \
+              --target "$(cat diagnostics/source-commit.log)" --prerelease \
+              --title "AzaharPlus ${UPSTREAM_TAG} – Armada ARM64" \
+              --notes "Experimental community AppImage for Armada OS ARM64. Built from tagged fork sources with FFmpeg 7.1.5. Requires on-device testing. Source archives, licenses and checksums included. Not affiliated with upstream developers."
           fi
