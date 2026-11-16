@@ -1,0 +1,393 @@
+
+name: Build AzaharPlus Armada ARM64 AppImage
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: "AzaharPlus source repository"
+        required: true
+        type: string
+        default: "millee91/AzaharPlus-Armada"
+      upstream_tag:
+        description: "Stable source tag"
+        required: true
+        type: string
+        default: "AZAHAR_PLUS_2126_2_A"
+      publish_prerelease:
+        description: "Publish as GitHub prerelease"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-appimage:
+    name: Fedora 44 ARM64 AppImage
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+
+    steps:
+      - name: Prepare directories
+        shell: bash
+        run: |
+          mkdir -p out diagnostics
+
+      - name: Build AzaharPlus on Fedora 44
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+        run: |
+          set -euo pipefail
+
+          docker run --rm -i \
+            --platform linux/arm64 \
+            -e UPSTREAM_TAG \
+            -e SOURCE_REPOSITORY \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            fedora:44 \
+            bash -se <<'BUILD_SCRIPT'
+
+          set -euo pipefail
+
+          echo "=== Fedora ==="
+          cat /etc/fedora-release
+
+          echo "=== Architecture ==="
+          uname -m
+          test "$(uname -m)" = "aarch64"
+
+          echo "=== Install dependencies ==="
+
+          dnf install -y \
+            git \
+            cmake \
+            gcc \
+            gcc-c++ \
+            clang \
+            ninja-build \
+            make \
+            file \
+            findutils \
+            binutils \
+            curl \
+            wget \
+            tar \
+            xz \
+            patch \
+            diffutils \
+            python3 \
+            perl \
+            patchelf \
+            desktop-file-utils \
+            pkgconf-pkg-config \
+            zlib-devel \
+            openssl-devel \
+            jack-audio-connection-kit-devel \
+            libX11-devel \
+            libXext-devel \
+            pipewire-devel \
+            portaudio-devel \
+            qt6-qtbase-devel \
+            qt6-qtbase-private-devel \
+            qt6-qtmultimedia-devel \
+            qt6-qtwayland \
+            qt6-qtsvg \
+            SDL2-devel \
+            xorg-x11-server-devel \
+            2>&1 | tee /work/diagnostics/dependencies.log
+
+          echo "=== Download FFmpeg 7.1.5 ==="
+
+          cd /work
+
+          curl -fL \
+            --retry 3 \
+            https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz \
+            -o ffmpeg-7.1.5.tar.xz
+
+          tar -xf ffmpeg-7.1.5.tar.xz
+          cd /work/ffmpeg-7.1.5
+
+          echo "=== Configure FFmpeg ==="
+
+          if ! ./configure \
+            --prefix=/opt/ffmpeg7 \
+            --libdir=/opt/ffmpeg7/lib \
+            --arch=aarch64 \
+            --enable-shared \
+            --disable-static \
+            --disable-programs \
+            --disable-doc \
+            --disable-debug \
+            --disable-autodetect \
+            --enable-avcodec \
+            --enable-avformat \
+            --enable-avfilter \
+            --enable-avutil \
+            --enable-swresample \
+            --enable-swscale \
+            --enable-pic \
+            --enable-pthreads \
+            2>&1 | tee /work/diagnostics/ffmpeg-configure.log; then
+            exit 1
+          fi
+
+          echo "=== Compile FFmpeg ==="
+
+          if ! make -j4 \
+            2>&1 | tee /work/diagnostics/ffmpeg-build.log; then
+            exit 1
+          fi
+
+          echo "=== Install FFmpeg ==="
+
+          if ! make install \
+            2>&1 | tee /work/diagnostics/ffmpeg-install.log; then
+            exit 1
+          fi
+
+          echo "=== Register FFmpeg 7 ==="
+
+          echo /opt/ffmpeg7/lib \
+            > /etc/ld.so.conf.d/ffmpeg7.conf
+
+          ldconfig
+
+          export PKG_CONFIG_PATH="/opt/ffmpeg7/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="/opt/ffmpeg7/lib/pkgconfig"
+          export LD_LIBRARY_PATH="/opt/ffmpeg7/lib:${LD_LIBRARY_PATH:-}"
+          export CMAKE_PREFIX_PATH="/opt/ffmpeg7"
+
+          echo "=== Verify FFmpeg versions ==="
+
+          pkg-config --modversion libavutil \
+            | tee /work/diagnostics/ffmpeg-version.log
+
+          pkg-config --modversion libavcodec \
+            | tee -a /work/diagnostics/ffmpeg-version.log
+
+          pkg-config --modversion libavformat \
+            | tee -a /work/diagnostics/ffmpeg-version.log
+
+          pkg-config --modversion libavfilter \
+            | tee -a /work/diagnostics/ffmpeg-version.log
+
+          test "$(pkg-config --modversion libavutil | cut -d. -f1)" = "59"
+
+          echo "=== Clone AzaharPlus from fork ==="
+
+          git clone \
+            --depth 1 \
+            --branch "$UPSTREAM_TAG" \
+            --recurse-submodules \
+            --shallow-submodules \
+            "https://github.com/${SOURCE_REPOSITORY}.git" \
+            /work/src \
+            2>&1 | tee /work/diagnostics/clone.log
+
+          echo "=== Record source commit ==="
+
+          git -C /work/src rev-parse HEAD \
+            | tee /work/diagnostics/source-commit.log
+
+          echo "=== Configure AzaharPlus ==="
+
+          cmake -E rm -rf /work/src/build
+
+          if ! cmake \
+            -S /work/src \
+            -B /work/src/build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/opt/ffmpeg7 \
+            -DCMAKE_INSTALL_RPATH=/opt/ffmpeg7/lib \
+            -DCMAKE_BUILD_RPATH=/opt/ffmpeg7/lib \
+            -DAVCODEC_INCLUDE_DIRS=/opt/ffmpeg7/include \
+            -DAVFORMAT_INCLUDE_DIRS=/opt/ffmpeg7/include \
+            -DAVFILTER_INCLUDE_DIRS=/opt/ffmpeg7/include \
+            -DAVUTIL_INCLUDE_DIRS=/opt/ffmpeg7/include \
+            -DSWRESAMPLE_INCLUDE_DIRS=/opt/ffmpeg7/include \
+            -DAVCODEC_LIBRARIES=/opt/ffmpeg7/lib/libavcodec.so \
+            -DAVFORMAT_LIBRARIES=/opt/ffmpeg7/lib/libavformat.so \
+            -DAVFILTER_LIBRARIES=/opt/ffmpeg7/lib/libavfilter.so \
+            -DAVUTIL_LIBRARIES=/opt/ffmpeg7/lib/libavutil.so \
+            -DSWRESAMPLE_LIBRARIES=/opt/ffmpeg7/lib/libswresample.so \
+            -DENABLE_QT=ON \
+            -DUSE_SYSTEM_QT=ON \
+            -DENABLE_FFMPEG=ON \
+            -DENABLE_LTO=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_ROOM_STANDALONE=OFF \
+            -DCITRA_WARNINGS_AS_ERRORS=OFF \
+            2>&1 | tee /work/diagnostics/cmake.log; then
+            exit 1
+          fi
+
+          echo "=== Configure Qt Wayland plugins ==="
+
+          QT_PLUGIN_DIR="$(qtpaths6 --query QT_INSTALL_PLUGINS)"
+
+          echo "Qt plugin directory: $QT_PLUGIN_DIR"
+
+          ls -la "$QT_PLUGIN_DIR/platforms/" \
+            | tee /work/diagnostics/qt-platforms.log
+
+          WAYLAND_PLUGIN="$QT_PLUGIN_DIR/platforms/libqwayland.so"
+
+          if [ ! -f "$WAYLAND_PLUGIN" ]; then
+            echo "ERROR: Qt Wayland plugin not found:"
+            echo "$WAYLAND_PLUGIN"
+            exit 1
+          fi
+
+          export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
+          export EXTRA_QT_PLUGINS="waylandcompositor"
+          export EXTRA_QT_MODULES="waylandcompositor"
+          export NO_STRIP=1
+          export APPIMAGE_EXTRACT_AND_RUN=1
+
+          echo "=== Compile and bundle AppImage ==="
+
+          if ! cmake \
+            --build /work/src/build \
+            --target bundle \
+            --parallel 4 \
+            2>&1 | tee /work/diagnostics/bundle.log; then
+
+            echo "=== Build errors ==="
+
+            grep -inE \
+              "error:|failed|not found|undefined reference|fatal error" \
+              /work/diagnostics/bundle.log \
+              | tail -n 100 || true
+
+            echo "=== Last 180 lines ==="
+            tail -n 180 /work/diagnostics/bundle.log
+            exit 1
+          fi
+
+          echo "=== Find AppImage ==="
+
+          find /work/src/build/bundle \
+            -type f \
+            -name "*.AppImage" \
+            -print \
+            | tee /work/diagnostics/appimage-files.log
+
+          APPIMAGE="$(find /work/src/build/bundle \
+            -type f \
+            -name '*.AppImage' \
+            -print -quit)"
+
+          if [ -z "$APPIMAGE" ]; then
+            echo "ERROR: No AppImage was generated"
+            exit 1
+          fi
+
+          test -s "$APPIMAGE"
+
+          echo "=== Name output ==="
+
+          VERSION="${UPSTREAM_TAG#AZAHAR_PLUS_}"
+          VERSION="${VERSION//_/.}"
+
+          OUTPUT="/work/out/AzaharPlus-${VERSION}-Armada-aarch64.AppImage"
+
+          cp "$APPIMAGE" "$OUTPUT"
+          chmod +x "$OUTPUT"
+
+          file "$OUTPUT" \
+            | tee /work/diagnostics/appimage-file.log
+
+          echo "=== Extract AppImage ==="
+
+          mkdir -p /work/verify
+          cd /work/verify
+
+          "$OUTPUT" --appimage-extract \
+            2>&1 | tee /work/diagnostics/extract.log
+
+          test -e squashfs-root/AppRun
+
+          echo "=== Verify Qt libraries ==="
+
+          find squashfs-root \
+            -name "libQt6Core.so*" \
+            -print \
+            | tee /work/diagnostics/qt-libraries.log
+
+          echo "=== Verify FFmpeg libraries ==="
+
+          find squashfs-root \
+            -name "libavcodec.so*" \
+            -print \
+            | tee /work/diagnostics/ffmpeg-libraries.log
+
+          find squashfs-root \
+            -name "libavutil.so*" \
+            -print \
+            | tee -a /work/diagnostics/ffmpeg-libraries.log
+
+          echo "=== Verify Wayland plugin ==="
+
+          find squashfs-root \
+            -name "libqwayland*.so" \
+            -print \
+            | tee /work/diagnostics/wayland-libraries.log
+
+          test -s /work/diagnostics/qt-libraries.log
+          test -s /work/diagnostics/ffmpeg-libraries.log
+          test -s /work/diagnostics/wayland-libraries.log
+
+          echo "=== Build completed successfully ==="
+          ls -lh "$OUTPUT"
+
+          BUILD_SCRIPT
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-build-diagnostics
+          path: diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload ARM64 AppImage
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzaharPlus-Armada-aarch64-AppImage
+          path: out/*.AppImage
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub prerelease
+        if: ${{ success() && inputs.publish_prerelease }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+
+          tag="armada-${UPSTREAM_TAG}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload \
+              "$tag" \
+              out/*.AppImage \
+              --clobber
+          else
+            gh release create \
+              "$tag" \
+              out/*.AppImage \
+              --prerelease \
+              --title "AzaharPlus ${UPSTREAM_TAG} - Armada ARM64" \
+              --notes "Unofficial ARM64 AppImage for Armada OS."
+          fi
