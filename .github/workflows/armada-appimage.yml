@@ -72,6 +72,8 @@ jobs:
             --output ffmpeg-7.1.5.tar.xz
           sha256sum ffmpeg-7.1.5.tar.xz \
             | tee /work/diagnostics/ffmpeg-source-sha256.txt
+          echo 'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f  ffmpeg-7.1.5.tar.xz' \
+            | sha256sum --check --status
           tar -xf ffmpeg-7.1.5.tar.xz
           cd /work/ffmpeg-7.1.5
           ./configure \
@@ -148,43 +150,116 @@ jobs:
           test -e "$APPDIR/AppRun"
           test -x "$APPDIR/usr/bin/azahar"
 
-          echo '=== Remove redundant Qt FFmpeg 8 backend ==='
+          echo '=== Remove Qt FFmpeg 8 backend and unused dependents ==='
+          # The Qt FFmpeg plugin pulls in Fedora FFmpeg 8. Azahar itself
+          # needs FFmpeg 7 and Qt uses GStreamer here instead.
           rm -f "$APPDIR/usr/plugins/multimedia/libffmpegmediaplugin.so"
-          for pattern in \
-            'libavcodec.so.62*' 'libavdevice.so.62*' \
-            'libavfilter.so.11*' 'libavformat.so.62*' \
-            'libavutil.so.60*' 'libswresample.so.6*' \
-            'libswscale.so.9*'; do
-            find "$APPDIR/usr/lib" -maxdepth 1 -name "$pattern" \
-              -print -delete
-          done | tee /work/diagnostics/removed-ffmpeg8.log
-          test -f "$APPDIR/usr/plugins/multimedia/libgstreamermediaplugin.so"
-          test -f "$APPDIR/usr/lib/libavcodec.so.61"
-          test -f "$APPDIR/usr/lib/libavutil.so.59"
-
-          echo '=== Check remaining ELF dynamic dependencies ==='
           python3 - "$APPDIR" <<'PYCODE' \
             | tee /work/diagnostics/dependency-audit.log
-          import pathlib, re, subprocess, sys
+          import pathlib
+          import re
+          import subprocess
+          import sys
+
           root = pathlib.Path(sys.argv[1])
-          bad = re.compile(r'^lib(?:avcodec\.so\.62|avdevice\.so\.62|avfilter\.so\.11|avformat\.so\.62|avutil\.so\.60|swresample\.so\.6|swscale\.so\.9)(?:\.|$)')
-          scanned = 0
-          for p in root.rglob('*'):
-              if not p.is_file() or p.is_symlink():
-                  continue
-              with p.open('rb') as f:
-                  if f.read(4) != b'\x7fELF':
+          libdir = root / 'usr/lib'
+          banned = re.compile(
+              r'^lib(?:avcodec\.so\.62|avdevice\.so\.62|'
+              r'avfilter\.so\.11|avformat\.so\.62|'
+              r'avutil\.so\.60|swresample\.so\.6|'
+              r'swscale\.so\.9)(?:\.|$)'
+          )
+          protected = (
+              'libQt6', 'libSDL', 'libgstreamer', 'libgstbase',
+              'libGLES', 'libEGL', 'libvulkan', 'libwayland'
+          )
+          removed_names = set()
+
+          def elf_info(path):
+              try:
+                  with path.open('rb') as f:
+                      if f.read(4) != b'\x7fELF':
+                          return None
+              except OSError:
+                  return None
+              result = subprocess.run(['readelf', '-d', str(path)],
+                  text=True, capture_output=True, check=True)
+              needed = re.findall(r'Shared library: \[([^]]+)\]', result.stdout)
+              sonames = re.findall(r'Library soname: \[([^]]+)\]', result.stdout)
+              return needed, sonames
+
+          def unlink_lib(path):
+              # Remove all symlink aliases before deleting their target.
+              aliases = [a for a in libdir.iterdir()
+                  if a.is_symlink() and a.resolve() == path.resolve()]
+              info = elf_info(path) if path.is_file() else None
+              for item in aliases + [path]:
+                  removed_names.add(item.name)
+                  item.unlink(missing_ok=True)
+                  print('Pruned:', item.name)
+              if info:
+                  removed_names.update(info[1])
+
+          # First remove the unwanted FFmpeg 8 shared libraries.
+          for path in sorted(libdir.iterdir()):
+              if (path.exists() or path.is_symlink()) and banned.match(path.name):
+                  if path.is_symlink():
+                      removed_names.add(path.name)
+                      path.unlink()
+                      print('Pruned alias:', path.name)
+                  else:
+                      unlink_lib(path)
+
+          # Prune transitive users of removed libraries. Never remove the
+          # emulator, Qt plugins, or essential runtime components silently.
+          while True:
+              offenders = []
+              for path in root.rglob('*'):
+                  if path.is_symlink() or not path.is_file():
                       continue
+                  info = elf_info(path)
+                  if info is None:
+                      continue
+                  for name in info[0]:
+                      if banned.match(name) or name in removed_names:
+                          offenders.append((path, name))
+                          break
+              if not offenders:
+                  break
+              for path, dep in offenders:
+                  if path.parent != libdir or path.name.startswith(protected):
+                      sys.exit(
+                          f'Cannot safely remove REQUIRED component: {path} '
+                          f'(needs {dep}). Review this dependency before release.'
+                      )
+                  unlink_lib(path)
+
+          # Guard against stale or broken aliases to the removed libraries.
+          stale = [p for p in libdir.iterdir()
+              if p.is_symlink() and (banned.match(p.name) or not p.exists())]
+          for p in stale:
+              removed_names.add(p.name)
+              p.unlink()
+              print('Pruned stale alias:', p.name)
+
+          # Verify that no binary still directly depends on FFmpeg 8.
+          scanned = 0
+          for path in root.rglob('*'):
+              if path.is_symlink() or not path.is_file():
+                  continue
+              info = elf_info(path)
+              if info is None:
+                  continue
               scanned += 1
-              proc = subprocess.run(['readelf', '-d', str(p)], text=True,
-                                    capture_output=True, check=True)
-              for needed in re.findall(r'Shared library: \[([^]]+)\]', proc.stdout):
-                  if bad.match(needed):
-                      print('FORBIDDEN DEPENDENCY:', p, '->', needed)
-                      sys.exit(1)
+              for name in info[0]:
+                  if banned.match(name) or name in removed_names:
+                      sys.exit(f'Unresolved dependency: {path} -> {name}')
           print('ELF files checked:', scanned)
           print('No remaining FFmpeg 8 dependencies')
           PYCODE
+          test -f "$APPDIR/usr/plugins/multimedia/libgstreamermediaplugin.so"
+          test -f "$APPDIR/usr/lib/libavcodec.so.61"
+          test -f "$APPDIR/usr/lib/libavutil.so.59"
 
           echo '=== Bundle essential GStreamer plugins for Qt camera ==='
           GST_DST="$APPDIR/usr/lib/gstreamer-1.0"
@@ -202,8 +277,15 @@ jobs:
           done | tee /work/diagnostics/gstreamer-plugins.log
           test -f "$GST_DST/libgstcoreelements.so"
           test -f "$GST_DST/libgstplayback.so"
-          # These GStreamer plugins may use system codecs/device drivers.
-          # Do not remove general libraries based solely on their filename.
+          echo '=== Check added GStreamer ELF dependencies ==='
+          for plugin in "$GST_DST"/*.so; do
+            readelf -d "$plugin" | grep 'Shared library:' || true
+            if readelf -d "$plugin" | grep -Eq 'Shared library: \[lib(avcodec\.so\.62|avformat\.so\.62|avutil\.so\.60|swresample\.so\.6|swscale\.so\.9)\]'; then
+              echo "GStreamer plugin needs FFmpeg 8: $plugin"
+              exit 1
+            fi
+          done > /work/diagnostics/gstreamer-elf-audit.log
+          # Do not remove arbitrary audio/camera/device libraries by filename.
 
           echo '=== Make original SVG logo into 256x256 PNG ==='
           ICON_SVG="$APPDIR/usr/share/icons/hicolor/scalable/apps/org.azahar_emu.Azahar.svg"
@@ -256,8 +338,10 @@ jobs:
           mkdir -p "$APPDIR/usr/share/doc/azaharplus/third-party"
           cp /work/src/LICENSE.txt \
             "$APPDIR/usr/share/doc/azaharplus/LICENSE.txt"
-          cp -a /work/src/misc/licenses \
-            "$APPDIR/usr/share/doc/azaharplus/third-party/upstream-licenses"
+          if test -d /work/src/misc/licenses; then
+            cp -a /work/src/misc/licenses \
+              "$APPDIR/usr/share/doc/azaharplus/third-party/upstream-licenses"
+          fi
           cp /work/ffmpeg-7.1.5/COPYING.LGPLv2.1 \
             "$APPDIR/usr/share/doc/azaharplus/third-party/FFmpeg-LGPL-2.1.txt"
           for pkg in qt6-qtbase qt6-qtmultimedia qt6-qtwayland \
@@ -308,6 +392,17 @@ jobs:
           test -f squashfs-root/usr/lib/libavcodec.so.61
           test -f squashfs-root/usr/plugins/platforms/libqwayland.so
           test -f squashfs-root/usr/plugins/multimedia/libgstreamermediaplugin.so
+          echo '=== Dynamic library smoke check in build container ==='
+          for target in \
+            squashfs-root/usr/bin/azahar \
+            squashfs-root/usr/plugins/platforms/libqwayland.so \
+            squashfs-root/usr/plugins/multimedia/libgstreamermediaplugin.so; do
+            LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib:${LD_LIBRARY_PATH:-}" \
+              ldd "$target" | tee -a /work/diagnostics/ldd-smoke-test.log
+          done
+          if grep -q 'not found' /work/diagnostics/ldd-smoke-test.log; then
+            echo 'A required runtime library is missing'; exit 1
+          fi
           if find squashfs-root -name 'libavcodec.so.62*' \
             -o -name 'libavutil.so.60*' | grep .; then
             echo 'Unexpected FFmpeg 8 in AppImage'; exit 1
