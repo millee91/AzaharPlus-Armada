@@ -424,17 +424,27 @@ jobs:
           APPRUN
           chmod 755 "$APPDIR/AppRun"
 
-          echo '=== Align desktop filename with AppStream ID ==='
-          # The original AppDir contains azahar.desktop. AppImage tooling uses
-          # that basename to find the matching .appdata.xml metadata.
+          echo '=== Repair AppDir desktop symlink and align AppStream ID ==='
+          # linuxdeploy created a root desktop symlink to the old build path.
+          # It becomes dangling when the compiled AppDir is unpacked elsewhere.
           DESKTOP_ID=org.azahar_emu.Azahar
-          test -f "$APPDIR/azahar.desktop"
-          mv "$APPDIR/azahar.desktop" "$APPDIR/$DESKTOP_ID.desktop"
-          if test -f "$APPDIR/usr/share/applications/azahar.desktop"; then
-            mv "$APPDIR/usr/share/applications/azahar.desktop" \
-               "$APPDIR/usr/share/applications/$DESKTOP_ID.desktop"
+          APPLICATIONS="$APPDIR/usr/share/applications"
+          ORIGINAL_DESKTOP="$APPLICATIONS/azahar.desktop"
+          NORMALIZED_DESKTOP="$APPLICATIONS/$DESKTOP_ID.desktop"
+          if test -f "$ORIGINAL_DESKTOP"; then
+            mv "$ORIGINAL_DESKTOP" "$NORMALIZED_DESKTOP"
           fi
+          test -f "$NORMALIZED_DESKTOP" || {
+            echo "ERROR: Cannot find installed desktop file in $APPLICATIONS"
+            ls -la "$APPLICATIONS" "$APPDIR" || true
+            exit 1
+          }
+          rm -f "$APPDIR/azahar.desktop" "$APPDIR/$DESKTOP_ID.desktop"
+          ln -s "usr/share/applications/$DESKTOP_ID.desktop" \
+            "$APPDIR/$DESKTOP_ID.desktop"
           test -f "$APPDIR/$DESKTOP_ID.desktop"
+          desktop-file-validate "$NORMALIZED_DESKTOP"
+          echo "Desktop entry: $DESKTOP_ID.desktop"
 
           echo '=== Provide AppStream metadata ==='
           META_DIR="$APPDIR/usr/share/metainfo"
