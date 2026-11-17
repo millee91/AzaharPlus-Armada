@@ -6,7 +6,7 @@ This repository is a fork of the upstream AzaharPlus source with an additional A
 
 ## Downloads
 
-- [Releases for this Armada build](https://github.com/millee91/AzaharPlus-Armada/releases) — public downloads appear once a release is published.
+- [Published experimental prerelease](https://github.com/millee91/AzaharPlus-Armada/releases) — download the current Armada ARM64 AppImage and matching checksums under **Assets**.
 - [Latest successful packaging run (#7)](https://github.com/millee91/AzaharPlus-Armada/actions/runs/44022901906) — download the `AzaharPlus-Armada-release-files` artifact (GitHub sign-in may be required).
 - [Official upstream AzaharPlus releases](https://github.com/AzaharPlus/AzaharPlus/releases) — other supported platforms.
 
@@ -14,7 +14,7 @@ Current target version: **AzaharPlus 2126.2.A**; AppImage filename: `AzaharPlus-
 
 ## Install and run on Armada OS
 
-1. Download the Armada ARM64 AppImage from the correct release, or extract it from the GitHub Actions `AzaharPlus-Armada-release-files` ZIP artifact.
+1. Download the ARM64 AppImage from the [public prerelease](https://github.com/millee91/AzaharPlus-Armada/releases), or extract it from the matching GitHub Actions `AzaharPlus-Armada-release-files` ZIP artifact.
 2. In the file manager, open **Properties → Permissions** and enable executing the file as a program (the exact wording depends on the file manager).
 3. Double-click the AppImage to start it. No system-wide installation is intended.
 

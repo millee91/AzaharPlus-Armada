@@ -1,4 +1,4 @@
-name: Update Armada draft release description
+name: Sync Armada prerelease metadata
 
 on:
   push:
@@ -13,26 +13,39 @@ permissions:
   contents: write
 
 jobs:
-  update-draft:
+  sync-prerelease:
+    name: Update published prerelease title, notes and version tag
     runs-on: ubuntu-latest
     steps:
       - name: Check out release notes
         uses: actions/checkout@v4
-      - name: Update title and description of existing draft only
+      - name: Update the existing Armada prerelease only
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag='armada-AZAHAR_PLUS_2126_2_A'
+          release_id=447469594
+          old_tag='untagged-7f2e0647fbf8cb2a3953'
+          target_tag='armada-AZAHAR_PLUS_2126_2_A'
           title='AzaharPlus 2126.2.A - Armada OS (ARM64)'
-          release_id="$(gh api "repos/${GH_REPO}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${tag}\" and .draft == true) | .id" | head -n 1)"
-          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
-            echo '::error::The expected draft release was not found. No release changed.'
-            exit 1
-          fi
+          appimage='AzaharPlus-2126.2.A-Armada-aarch64.AppImage'
+          expected_sha='sha256:b13593e8f32a8618343f3c55c620898f7d4a25fd5d8f8e2168dd1f2ec21618d0'
+
+          # Never create a new release, modify a stable release or replace assets.
+          current="$(gh api "repos/${GH_REPO}/releases/${release_id}")"
+          jq -e --arg old "$old_tag" --arg tag "$target_tag" --arg app "$appimage" --arg digest "$expected_sha" \
+            '.draft == false and .prerelease == true and (.tag_name == $old or .tag_name == $tag) and (.assets | length) == 5 and any(.assets[]; .name == $app and .digest == $digest)' <<< "$current"
+          gh api "repos/${GH_REPO}/git/ref/tags/${target_tag}" --jq '.object.sha' >/dev/null
+
+          # Renaming the release uses the existing tag and preserves all assets.
           gh api --method PATCH "repos/${GH_REPO}/releases/${release_id}" \
-            -f name="$title" -f body="$(cat RELEASE_NOTES.md)" \
-            --jq '{name: .name, draft: .draft, prerelease: .prerelease, id: .id}'
-          test "$(gh api "repos/${GH_REPO}/releases/${release_id}" --jq '.draft')" = true
+            -f tag_name="$target_tag" \
+            -f name="$title" \
+            -f body="$(cat RELEASE_NOTES.md)" \
+            --jq '{id, tag_name, name, draft, prerelease, assets: (.assets | length)}'
+
+          after="$(gh api "repos/${GH_REPO}/releases/${release_id}")"
+          jq -e --arg tag "$target_tag" --arg app "$appimage" --arg digest "$expected_sha" \
+            '.tag_name == $tag and .draft == false and .prerelease == true and (.assets | length) == 5 and any(.assets[]; .name == $app and .digest == $digest)' <<< "$after"
