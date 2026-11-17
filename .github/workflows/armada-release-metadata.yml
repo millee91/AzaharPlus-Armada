@@ -1,0 +1,38 @@
+name: Update Armada draft release description
+
+on:
+  push:
+    branches:
+      - AzaharPlus
+    paths:
+      - RELEASE_NOTES.md
+      - .github/workflows/armada-release-metadata.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@v4
+      - name: Update title and description of existing draft only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag='armada-AZAHAR_PLUS_2126_2_A'
+          title='AzaharPlus 2126.2.A - Armada OS (ARM64)'
+          release_id="$(gh api "repos/${GH_REPO}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${tag}\" and .draft == true) | .id" | head -n 1)"
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            echo '::error::The expected draft release was not found. No release changed.'
+            exit 1
+          fi
+          gh api --method PATCH "repos/${GH_REPO}/releases/${release_id}" \
+            -f name="$title" -f body="$(cat RELEASE_NOTES.md)" \
+            --jq '{name: .name, draft: .draft, prerelease: .prerelease, id: .id}'
+          test "$(gh api "repos/${GH_REPO}/releases/${release_id}" --jq '.draft')" = true

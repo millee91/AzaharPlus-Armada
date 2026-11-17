@@ -1,0 +1,1 @@
+b13593e8f32a8618343f3c55c620898f7d4a25fd5d8f8e2168dd1f2ec21618d0  AzaharPlus-2126.2.A-Armada-aarch64.AppImage

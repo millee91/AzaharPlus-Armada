@@ -1,85 +1,59 @@
-<b>AzaharPlus</b> is a fork of the Azahar 3DS emulator with extra features.
+# AzaharPlus for Armada OS (ARM64)
 
-Each version is the same as the corresponding version of Azahar exept for this:
-- Compatibility with all game files. If a file works with any Citra fork, it works with AzaharPlus.
-- Ability to download system files from official servers. No need for an actual 3DS.
-- Compatibility with older CPUs (no SSE4.2 required)
-- Compatibility with Android 9
-- ZipPass: A new way to exchange StreetPass data through zip files
-- Built in cheats
-- Amiibo generation
-- Better multiplayer compatibility with other Citra forks
+**Unofficial, experimental community build** of [AzaharPlus](https://github.com/AzaharPlus/AzaharPlus), a Nintendo 3DS emulator, packaged as an AArch64 AppImage for Armada OS.
 
-The Azahar logo is the property of PabloMK7 and angyartanddraw
----
+This repository is a fork of the upstream AzaharPlus source with an additional ARM64 AppImage build workflow. It is **not an official AzaharPlus or Armada OS release**. Packaging checks pass, but launching and running games on an actual Armada OS device has not yet been confirmed.
 
-![Azahar Emulator](https://azahar-emu.org/resources/images/logo/azahar-name-and-logo.svg)
-![Plus](https://cdn-icons-png.flaticon.com/128/226/226974.png)
+## Downloads
 
-![GitHub Release](https://img.shields.io/github/v/release/AzaharPlus/AzaharPlus?label=Current%20Release)
-![GitHub Downloads](https://img.shields.io/github/downloads/AzaharPlus/AzaharPlus/total?logo=github&label=GitHub%20Downloads)
+- [Releases for this Armada build](https://github.com/millee91/AzaharPlus-Armada/releases) — public downloads appear once a release is published.
+- [Latest successful packaging run (#7)](https://github.com/millee91/AzaharPlus-Armada/actions/runs/44022901906) — download the `AzaharPlus-Armada-release-files` artifact (GitHub sign-in may be required).
+- [Official upstream AzaharPlus releases](https://github.com/AzaharPlus/AzaharPlus/releases) — other supported platforms.
 
-# Installation
+Current target version: **AzaharPlus 2126.2.A**; AppImage filename: `AzaharPlus-2126.2.A-Armada-aarch64.AppImage`.
 
-Download the latest release from [Releases](https://github.com/AzaharPlus/AzaharPlus/releases).
+## Install and run on Armada OS
 
-### Android
+1. Download the Armada ARM64 AppImage from the correct release, or extract it from the GitHub Actions `AzaharPlus-Armada-release-files` ZIP artifact.
+2. In the file manager, open **Properties → Permissions** and enable executing the file as a program (the exact wording depends on the file manager).
+3. Double-click the AppImage to start it. No system-wide installation is intended.
 
-The Android build is available in 2 flavors.
+If your file manager does not launch it, open a terminal in the directory containing the AppImage and run:
 
-- Replace: It has the same application id as Azahar, so it will replace it on the device.
-Its display name is "AzaharPlus" and its icon background is blue.
-Use this one if you have other apps that target Azahar, like a frontend for example.
-
-- Coexist: It has a new application id so it can coexist with Azahar without issues.
-Its display name is "+AzaharPlus+" and its icon background is red.
-
-### Cocoon
-
-The easiest way to use AzaharPlus with Cocoon is to uninstall Azahar and install the replace variant of AzaharPlus. It wiil be seen as Azahar by Cocoon.
-
-### Batocera
-
-To use AzaharPlus with Batocera you can install the Batocera Unofficial Add-ons
-
- https://github.com/batocera-unofficial-addons/batocera-unofficial-addons
-
-# ZipPass
-
-ZipPass allows you to share StreetPass data in the form of zip files.<br>
-On desktop it is in File > ZipPass. On android it is in the main menu.
-
-- It can only be used when no game is running.
-- It requires system files and LLE modules enabled.
-- You need to enable StreetPass in your games.
-- The export feature will save the StreetPass data of all your games in a xxx.pass.zip file.
-- The import feature lets you pick one or several xxx.pass.zip files and will simulate StreetPass tags.
-- You can pick as many files as you want for the import but every game has a limit for its queue and anything - beyond that will be ignored.
-- This is all pretty experimental so in case of issues, I added a menu to disable StreetPass on every game. You won't lose anything, you will simply need to enable StreetPass again.
-- I opened a topic on the github for people to share their data: [ZipPass Exchange](https://github.com/AzaharPlus/AzaharPlus/discussions/117)
-
-# Build instructions
-
-Please refer this repository's [wiki](https://github.com/AzaharPlus/AzaharPlus/wiki/Building-From-Source) for build instructions
-
-# Minimum requirements
-Below are the minimum requirements to run AzaharPlus:
-
-### Desktop
-```
-Operating System: Windows 10 (64-bit), or modern 64-bit Linux
-CPU: x86-64/ARM64 CPU (Windows for ARM not supported). Single core performance higher than 1,800 on Passmark
-GPU: OpenGL 4.3 or Vulkan 1.1 support
-Memory: 2GB of RAM. 4GB is recommended
-```
-### Android
-```
-Operating System: Android 9.0+ (64-bit)
-CPU: Snapdragon 835 SoC or better
-GPU: OpenGL ES 3.2 or Vulkan 1.1 support
-Memory: 2GB of RAM. 4GB is recommended
+```bash
+chmod +x AzaharPlus-2126.2.A-Armada-aarch64.AppImage
+./AzaharPlus-2126.2.A-Armada-aarch64.AppImage
 ```
 
-# Where to find this project
-- Github: https://github.com/AzaharPlus/AzaharPlus
-- Radicle: [rad:z3A98CGFJYqHnttims4N7jYNzRoDu](https://radicle.network/nodes/rosa.radicle.network/rad%3Az3A98CGFJYqHnttims4N7jYNzRoDu)
+Requires an **ARM64 / AArch64 Linux** environment. This is **not** an Android APK, an x86-64 build or a Windows executable. Compatibility with Armada OS and other Linux variants remains experimental.
+
+## Verify your download
+
+The checksum below is for the **AppImage produced by successful Actions run #7**, not for an older file attached to a draft release:
+
+```text
+SHA256: b13593e8f32a8618343f3c55c620898f7d4a25fd5d8f8e2168dd1f2ec21618d0
+File:   AzaharPlus-2126.2.A-Armada-aarch64.AppImage
+```
+
+Download the [version-specific SHA256SUMS.txt](https://github.com/millee91/AzaharPlus-Armada/blob/AzaharPlus/checksums/2126.2.A/SHA256SUMS.txt) into the same folder as that AppImage, then run:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+Expected output ends with `OK`. If the hashes do not match, **do not use that AppImage as though it were build #7**. The build artifact itself also contains an `SHA256SUMS.txt` covering the files packaged in that run.
+
+## Build details and sources
+
+- Built in **Fedora 44 AArch64**, using **Qt 6 / Wayland** and Qt Multimedia's **GStreamer backend**.
+- Uses **FFmpeg 7.1.5**; the AppImage packaging check confirms no FFmpeg 8 shared-library dependencies remain.
+- [AppImage GitHub Actions workflow](.github/workflows/armada-appimage.yml) includes compiled-output reuse and compiler/FFmpeg caching.
+- The Actions release-files artifact contains the AppImage, corresponding source archive (including submodules), FFmpeg source archive, build workflow and a generated `SHA256SUMS.txt`.
+- License notices for AzaharPlus, FFmpeg and bundled dependencies are included in the AppImage under `usr/share/doc/azaharplus/`. Follow the licenses in the corresponding source distributions.
+
+## Issues and acknowledgements
+
+For ARM64 packaging or launch problems, [open an issue in this fork](https://github.com/millee91/AzaharPlus-Armada/issues) and include the Armada OS version, device, and the relevant terminal output. Upstream emulator questions belong with [AzaharPlus](https://github.com/AzaharPlus/AzaharPlus).
+
+AzaharPlus is based on [Azahar](https://github.com/azahar-emu/azahar). The Azahar logo is credited to **PabloMK7 and angyartanddraw** (CC BY 4.0). This fork does not claim ownership of upstream code, artwork or trademarks.
