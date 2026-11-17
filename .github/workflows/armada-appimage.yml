@@ -424,6 +424,18 @@ jobs:
           APPRUN
           chmod 755 "$APPDIR/AppRun"
 
+          echo '=== Align desktop filename with AppStream ID ==='
+          # The original AppDir contains azahar.desktop. AppImage tooling uses
+          # that basename to find the matching .appdata.xml metadata.
+          DESKTOP_ID=org.azahar_emu.Azahar
+          test -f "$APPDIR/azahar.desktop"
+          mv "$APPDIR/azahar.desktop" "$APPDIR/$DESKTOP_ID.desktop"
+          if test -f "$APPDIR/usr/share/applications/azahar.desktop"; then
+            mv "$APPDIR/usr/share/applications/azahar.desktop" \
+               "$APPDIR/usr/share/applications/$DESKTOP_ID.desktop"
+          fi
+          test -f "$APPDIR/$DESKTOP_ID.desktop"
+
           echo '=== Provide AppStream metadata ==='
           META_DIR="$APPDIR/usr/share/metainfo"
           mkdir -p "$META_DIR"
@@ -437,7 +449,7 @@ jobs:
             <summary>Experimental ARM64 build of a Nintendo 3DS emulator</summary>
             <description><p>Unofficial AzaharPlus AppImage built for Armada OS.</p></description>
             <url type="homepage">https://github.com/millee91/AzaharPlus-Armada</url>
-            <launchable type="desktop-id">azahar.desktop</launchable>
+            <launchable type="desktop-id">org.azahar_emu.Azahar.desktop</launchable>
           </component>
           APPDATA
           appstreamcli validate "$META_DIR/org.azahar_emu.Azahar.appdata.xml" \
@@ -487,6 +499,10 @@ jobs:
           OUTPUT="/work/out/AzaharPlus-${VERSION}-Armada-aarch64.AppImage"
           ARCH=aarch64 "$TOOL" "$APPDIR" "$OUTPUT" \
             2>&1 | tee /work/diagnostics/repackage.log
+          if grep -q 'AppStream upstream metadata is missing' /work/diagnostics/repackage.log; then
+            echo 'ERROR: Final AppImage is missing matching AppStream metadata'
+            exit 1
+          fi
           test -s "$OUTPUT"
           chmod +x "$OUTPUT"
           file "$OUTPUT"
@@ -501,6 +517,8 @@ jobs:
             2>&1 | tee /work/diagnostics/extract.log
           test -x squashfs-root/AppRun
           test -e squashfs-root/.DirIcon
+          test -f squashfs-root/org.azahar_emu.Azahar.desktop
+          test -f squashfs-root/usr/share/metainfo/org.azahar_emu.Azahar.appdata.xml
           test -f squashfs-root/usr/lib/libavcodec.so.61
           test -f squashfs-root/usr/plugins/platforms/libqwayland.so
           test -f squashfs-root/usr/plugins/multimedia/libgstreamermediaplugin.so
