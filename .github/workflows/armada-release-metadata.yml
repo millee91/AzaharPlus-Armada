@@ -1,4 +1,4 @@
-name: Keep Armada release unpublished until device testing
+name: Publish experimental Armada ARM64 prerelease
 
 on:
   push:
@@ -12,11 +12,14 @@ permissions:
   contents: write
 
 jobs:
-  hide-release:
-    name: Unpublish existing Armada prerelease (keep all assets)
+  publish-existing-prerelease:
+    name: Publish verified release assets for public testing
     runs-on: ubuntu-latest
     steps:
-      - name: Move existing published prerelease back to draft
+      - name: Check out notes
+        uses: actions/checkout@v4
+
+      - name: Publish existing draft as prerelease without replacing assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -25,22 +28,22 @@ jobs:
           set -euo pipefail
           release_id=447469594
           tag='armada-AZAHAR_PLUS_2126_2_A'
-          appimage='AzaharPlus-2126.2.A-Armada-aarch64.AppImage'
-          expected_sha='sha256:b13593e8f32a8618343f3c55c620898f7d4a25fd5d8f8e2168dd1f2ec21618d0'
+          title='AzaharPlus 2126.2.A - Armada OS (ARM64)'
+          image='AzaharPlus-2126.2.A-Armada-aarch64.AppImage'
+          digest='sha256:b13593e8f32a8618343f3c55c620898f7d4a25fd5d8f8e2168dd1f2ec21618d0'
 
-          current="$(gh api "repos/${GH_REPO}/releases/${release_id}")"
-          jq -e --arg tag "$tag" --arg app "$appimage" --arg digest "$expected_sha" \
-            '.prerelease == true and .tag_name == $tag and (.assets | length) == 5 and any(.assets[]; .name == $app and .digest == $digest)' <<< "$current"
+          before="$(gh api "repos/${GH_REPO}/releases/${release_id}")"
+          jq -e --arg tag "$tag" --arg image "$image" --arg digest "$digest" \
+            '.draft == true and .prerelease == true and .tag_name == $tag and (.assets | length) == 5 and any(.assets[]; .name == $image and .digest == $digest)' <<< "$before"
 
-          if [[ "$(jq -r '.draft' <<< "$current")" != true ]]; then
-            gh api --method PATCH "repos/${GH_REPO}/releases/${release_id}" \
-              -F draft=true \
-              --jq '{id, tag_name, name, draft, prerelease, assets: (.assets | length)}'
-          else
-            echo 'Release is already a draft; leaving it unchanged.'
-          fi
+          gh api --method PATCH "repos/${GH_REPO}/releases/${release_id}" \
+            -F draft=false \
+            -F prerelease=true \
+            -f name="$title" \
+            -f body="$(cat RELEASE_NOTES.md)" \
+            --jq '{id, tag_name, name, draft, prerelease, assets: (.assets | length)}'
 
           after="$(gh api "repos/${GH_REPO}/releases/${release_id}")"
-          jq -e --arg tag "$tag" --arg app "$appimage" --arg digest "$expected_sha" \
-            '.draft == true and .prerelease == true and .tag_name == $tag and (.assets | length) == 5 and any(.assets[]; .name == $app and .digest == $digest)' <<< "$after"
-          echo 'Armada release is hidden as draft with all five assets intact.'
+          jq -e --arg tag "$tag" --arg image "$image" --arg digest "$digest" \
+            '.draft == false and .prerelease == true and .tag_name == $tag and (.assets | length) == 5 and any(.assets[]; .name == $image and .digest == $digest)' <<< "$after"
+          echo "Published experimental prerelease with unchanged assets."

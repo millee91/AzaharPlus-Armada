@@ -33,4 +33,15 @@ b13593e8f32a8618343f3c55c620898f7d4a25fd5d8f8e2168dd1f2ec21618d0  AzaharPlus-212
 
 The AppImage currently attached to this release **matches build #7** (SHA-256 shown above). Download the accompanying `SHA256SUMS.txt` from **Assets**, put it in the same folder as all files being checked, then run `sha256sum -c SHA256SUMS.txt`. The release includes the source-with-submodules archive, FFmpeg 7.1.5 source archive and the build workflow.
 
-Report ARM64 packaging issues in [this fork's issue tracker](https://github.com/millee91/AzaharPlus-Armada/issues).
+### Public testing and bug reports
+
+**Testers wanted.** This build has passed CI packaging and dependency checks, but has **not been verified to start or run games on a physical Armada OS handheld**. Expect possible issues with AppImage startup, graphics/Vulkan, audio, input, or game compatibility. It is not a stable or officially supported build.
+
+Please report results through [Issues in this fork](https://github.com/millee91/AzaharPlus-Armada/issues/new/choose), including successful launches as well as bugs. For bugs, include:
+
+- Your handheld model and Armada OS version
+- Whether the AppImage starts from desktop mode or a terminal
+- Graphics backend, what you expected, and what happened
+- Reproduction steps and the relevant terminal log/error output
+
+Do not upload copyrighted game dumps, system files, encryption keys, or personal information. Please keep reports specific to this ARM64 AppImage packaging; upstream emulator bugs should be reported to [AzaharPlus](https://github.com/AzaharPlus/AzaharPlus).

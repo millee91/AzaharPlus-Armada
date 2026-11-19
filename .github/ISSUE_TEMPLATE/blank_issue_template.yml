@@ -1,10 +1,15 @@
-name: New Issue (Developers Only)
-description: A blank issue template for developers only. If you are not a developer, do not use this issue template. Your issue WILL BE CLOSED if you do not use the appropriate issue template.
+name: Armada OS - Test results or feedback
+description: Share a successful launch, a compatibility result, or other constructive feedback
+title: "[Armada OS] "
 body:
   - type: markdown
     attributes:
       value: |
-        **If you are not a developer, do not use this issue template. Your issue WILL BE CLOSED if you do not use the appropriate issue template.**
+        Thank you for testing the unofficial AzaharPlus ARM64 AppImage. Please include the device model and Armada OS build. Do not attach copyrighted games, keys, or system files.
   - type: textarea
+    id: feedback
     attributes:
-      label: "Issue"
+      label: Test result / feedback
+      description: Which device, OS version, and AppImage version did you use? What worked and what did not?
+    validations:
+      required: true

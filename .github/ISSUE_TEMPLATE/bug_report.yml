@@ -1,66 +1,87 @@
-name: Bug Report
-description: File a bug report
-labels: ["bug"]
+name: Armada OS - Bug report
+description: Report a problem with the unofficial ARM64 AppImage on Armada OS
+title: "[Armada OS] "
 body:
   - type: markdown
     attributes:
-      value: Tech support does not belong here. You should only file an issue here if you think you have experienced a bug in Azahar.
-  - type: checkboxes
-    attributes:
-      label: Is there an existing issue for this?
-      description: Please search to see if an issue already exists for the bug you encountered.
-      options:
-      - label: I have searched the existing issues
-        required: true
-  - type: input
-    attributes:
-      label: Affected Build(s)
-      description: List the affected build(s) that this issue applies to.
-      placeholder: "1234"
-    validations:
-      required: true
-  - type: textarea
-    id: issue-desc
-    attributes:
-      label: Description of Issue
-      description: A brief description of the issue encountered along with any images and/or videos.
-    validations:
-      required: true
-  - type: textarea
-    id: expected-behavior
-    attributes:
-      label: Expected Behavior
-      description: A brief description of how it is expected to work along with any images and/or videos.
-    validations:
-      required: true
-  - type: textarea
-    id: reproduction-steps
-    attributes:
-      label: Reproduction Steps
-      description: A brief explanation of how to reproduce this issue. If possible, provide a save file to aid in reproducing the issue.
-    validations:
-      required: true
-  - type: textarea
-    id: log
-    attributes:
-      label: Log File
-      description: A log file will help our developers to better diagnose and fix the issue.
-    validations:
-      required: true
-  - type: textarea
-    id: system-config
-    attributes:
-      label: System Configuration
-      description: Information about your system. If using Linux, include whether you are using Flatpak or AppImage
-      placeholder: |
-        CPU: Intel i5-10400 / AMD Ryzen 5 3600
-        GPU/Driver: NVIDIA GeForce GTX 1060 (Driver 512.95)
-        RAM: 16GB DDR4-3200
-        OS: Windows 11 22H2 (Build 22621.819)
       value: |
-        CPU:
-        GPU/Driver:
-        RAM:
-        OS:
+        Thank you for testing **AzaharPlus 2126.2.A for Armada OS (ARM64)**.
+
+        This is an **experimental, unofficial** AppImage. Please search existing issues before posting. Do not attach copyrighted game dumps, encryption keys, system files, or private data.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I am testing the ARM64 AppImage from this repository, not Android or Windows.
+          required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device / handheld
+      description: For example, Retroid Pocket 6, AYN Odin 3, AYN Thor.
+      placeholder: Retroid Pocket 6
     validations:
       required: true
+  - type: input
+    id: armada_version
+    attributes:
+      label: Armada OS version
+      description: Include the release date/build ID if available.
+      placeholder: Fedora 44-based Armada, build/version ...
+    validations:
+      required: true
+  - type: input
+    id: azahar_version
+    attributes:
+      label: AzaharPlus AppImage version
+      value: AzaharPlus 2126.2.A - Armada aarch64 AppImage
+    validations:
+      required: true
+  - type: dropdown
+    id: problem_area
+    attributes:
+      label: What is affected?
+      options:
+        - AppImage will not launch
+        - Window or user interface
+        - Vulkan / graphics
+        - Audio / microphone / camera
+        - Gamepad / touch input
+        - Game startup or performance
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happens?
+      description: Include the exact error message and whether the app starts in desktop mode.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the graphics backend and any relevant game settings if needed.
+    validations:
+      required: true
+  - type: textarea
+    id: terminal
+    attributes:
+      label: Terminal output / logs
+      description: Paste the output from running the AppImage in a terminal, inside a code block. Remove private information.
+      render: shell
+  - type: textarea
+    id: details
+    attributes:
+      label: Additional details
+      description: GPU driver, game title, screenshots, workarounds, or whether another ARM64 emulator works.
